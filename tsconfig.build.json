@@ -2,6 +2,8 @@
   "compilerOptions": {
     "target": "ES2019",
     "module": "commonjs",
+    "outDir": "dist",
+    "rootDir": "src",
     "declaration": true,
     "strict": true,
     "esModuleInterop": true,
@@ -10,10 +12,10 @@
     "types": ["node", "mocha", "chai"]
   },
   "include": [
-    "src/**/*.ts",
-    "test/**/*.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "test"
   ]
 }
