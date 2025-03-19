@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { FitsError } from './errors';
 import { FitsHDU } from './fitsHDU';
 import { FitsHeader } from './fitsHeader';
+import { decompress } from './utils';
 
 // Define a union type for supported typed arrays
 export type FitsTypedArray =
@@ -43,7 +44,18 @@ export class Fits {
     Fits.log('info', `Opening FITS file: ${path}`);
     
     try {
-      const data = await fs.promises.readFile(path);
+      let data = await fs.promises.readFile(path);
+
+      if (path.endsWith('.gz')) {
+        const BlobConstructor = (global as any).Blob || require('buffer').Blob;
+        const fileBlob = new BlobConstructor([data]);
+        
+        const decompressedBlob = await decompress(fileBlob);
+        
+        const arrayBuffer = await decompressedBlob.arrayBuffer();
+        data = Buffer.from(arrayBuffer);
+      }
+
       return Fits.fromArrayBuffer(
         data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
       );
@@ -223,20 +235,22 @@ export class Fits {
       const header = hdu.header;
       const naxis: number = header.get('NAXIS') ?? 0;
       
-      if (hdu.data && naxis > 0) {
-        const totalElements = hdu.data.length;
-        const currentShape = hdu.getShape();
-        const product = currentShape.reduce((p, n) => p * n, 1);
-      
-        if (product !== totalElements && naxis === 1) {
-          header.set('NAXIS1', totalElements);
-      
-        } else {
-          Fits.log(
-            'warn',
-            'Data length does not match header dimensions; header not automatically adjusted.'
-          );
-        }
+      if (!hdu.data || naxis === 0) {
+        continue;
+      }
+
+      const totalElements = hdu.data.length;
+      const currentShape = hdu.getShape();
+      const product = currentShape.reduce((p, n) => p * n, 1);
+    
+      if (product !== totalElements && naxis === 1) {
+        header.set('NAXIS1', totalElements);
+    
+      } else {
+        Fits.log(
+          'warn',
+          'Data length does not match header dimensions; header not automatically adjusted.'
+        );
       }
     }
 

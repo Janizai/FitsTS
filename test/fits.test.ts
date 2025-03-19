@@ -1,6 +1,7 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
+import * as pako from 'pako';
 import { expect } from 'chai';
 import { Fits } from '../src/fits';
 import { FitsError } from '../src/errors';
@@ -218,5 +219,46 @@ describe('Fits Class', () => {
   
     // Clean up
     fs.unlinkSync(tempFile);
+  });
+
+  it('should save and read a gzipped FITS file', async () => {
+    const shape = [10, 10];
+    const fits = Fits.create(shape, 'uint8');
+    const tempGzipFile = getTempFilePath('test_fits_gzip.fits.gz');
+  
+    // Fill the data with a pattern.
+    if (fits.primary.data) {
+      const data = fits.primary.data as Uint8Array;
+      for (let i = 0; i < data.length; i++) {
+        data[i] = i % 256;
+      }
+    }
+  
+    // Convert the FITS file to an ArrayBuffer.
+    const fitsBuffer = fits.toArrayBuffer();
+  
+    // Compress the ArrayBuffer using pako.gzip.
+    const compressedData = pako.gzip(new Uint8Array(fitsBuffer));
+  
+    // Write the compressed data to a gz file asynchronously.
+    await fs.promises.writeFile(tempGzipFile, Buffer.from(compressedData));
+  
+    // Read back the gzipped file.
+    const gzipBuffer = await fs.promises.readFile(tempGzipFile);
+  
+    // Decompress the file.
+    const decompressedData = pako.ungzip(gzipBuffer);
+    // Create a new ArrayBuffer from the decompressed data.
+    const decompressedBuffer = decompressedData.buffer.slice(
+      decompressedData.byteOffset,
+      decompressedData.byteOffset + decompressedData.byteLength
+    );
+  
+    // Create a FITS object from the decompressed ArrayBuffer.
+    const fitsFromGzip = Fits.fromArrayBuffer(decompressedBuffer);
+    expect(fitsFromGzip.hdus.length).to.be.greaterThan(0);
+  
+    // Clean up the temporary file.
+    fs.unlinkSync(tempGzipFile);
   });
 });
