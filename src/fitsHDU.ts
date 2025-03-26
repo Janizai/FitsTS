@@ -22,7 +22,7 @@ export class FitsHDU {
     return dims;
   }
 
-  getData(): number[] | number[][] | undefined {
+  public getData(): number[] | number[][] | undefined {
     if (this.data === undefined) return undefined;
 
     const shape = this.getShape();
