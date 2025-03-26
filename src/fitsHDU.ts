@@ -1,8 +1,9 @@
 import { FitsHeader } from './fitsHeader';
+import { reshapeArray } from './utils';
 
 export class FitsHDU {
   header: FitsHeader;
-  data?: Uint8Array | Int16Array | Int32Array | BigInt64Array | Float32Array | Float64Array;
+  data?: Uint8Array | Int16Array | Int32Array | Float32Array | Float64Array;
   isPrimary: boolean;
   extType?: string;
 
@@ -20,6 +21,30 @@ export class FitsHDU {
     }
     return dims;
   }
+
+  getData(): number[] | number[][] | undefined {
+    if (this.data === undefined) return undefined;
+
+    const shape = this.getShape();
+    if (shape.length === 0) return undefined;
+
+    if (shape.length === 1) {
+      return Array.from(this.data);
+    }
+
+    else if (shape.length === 2) {
+      // Convention: header stores NAXIS1 as the number of columns and NAXIS2 as the number of rows.
+      const nCols = shape[0];
+      const nRows = shape[1];
+      const flat = Array.from(this.data);
+      return reshapeArray(flat, [nRows, nCols]);
+    }
+    // For ND (N > 2), return the flat array.
+    else {
+      return Array.from(this.data);
+    }
+  }
+
 
   get width(): number | undefined {
     return this.header.get('NAXIS1');

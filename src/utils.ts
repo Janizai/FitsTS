@@ -219,3 +219,14 @@ export async function decompress(file: Blob): Promise<Blob> {
       });
     }
   }
+
+  // Helper: reshape a flat array into a 2D array with the given [rows, cols].
+  // Note: This is provided for convenience, but the internal data remains a flat typed array.
+export function reshapeArray<T>(arr: T[], shape: [number, number]): T[][] {
+    const [rows, cols] = shape;
+    const result: T[][] = [];
+    for (let r = 0; r < rows; r++) {
+      result.push(arr.slice(r * cols, (r + 1) * cols));
+    }
+    return result;
+}

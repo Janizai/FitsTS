@@ -60,3 +60,53 @@ describe('FitsHDU Class', () => {
     });
   });
 });
+
+describe('FitsHDU getData()', () => {
+
+  it('should return undefined if no data is set', () => {
+    const hdu = new FitsHDU(true);
+    expect(hdu.getData()).to.be.undefined;
+  });
+
+  it('should return a flat array for 1D data', () => {
+    const hdu = new FitsHDU(true);
+    // Set header for 1D data.
+    hdu.header.set('NAXIS', 1, '1D data');
+    hdu.header.set('NAXIS1', 5, 'length');
+    // Assign a flat typed array.
+    hdu.data = new Int32Array([10, 20, 30, 40, 50]);
+    const data = hdu.getData();
+    // Expect a flat array with same values.
+    expect(data).to.deep.equal([10, 20, 30, 40, 50]);
+  });
+
+  it('should return a 2D array for 2D data', () => {
+    const hdu = new FitsHDU(true);
+    // Set header for 2D data. Convention: NAXIS1 = number of columns, NAXIS2 = number of rows.
+    hdu.header.set('NAXIS', 2, '2D data');
+    hdu.header.set('NAXIS1', 3, 'columns');
+    hdu.header.set('NAXIS2', 2, 'rows');
+    // Provide a flat typed array of length 6.
+    hdu.data = new Int16Array([1, 2, 3, 4, 5, 6]);
+    const data = hdu.getData();
+    // Expected shape: 2 rows x 3 columns => [[1,2,3], [4,5,6]]
+    expect(data).to.deep.equal([[1, 2, 3], [4, 5, 6]]);
+  });
+
+  it('should return a flat array for ND (N > 2) data', () => {
+    const hdu = new FitsHDU(true);
+    // Set header for 3D data.
+    hdu.header.set('NAXIS', 3, '3D data');
+    hdu.header.set('NAXIS1', 2, 'dim1');
+    hdu.header.set('NAXIS2', 2, 'dim2');
+    hdu.header.set('NAXIS3', 2, 'dim3');
+    // Total elements: 2*2*2 = 8.
+    hdu.data = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+    const data = hdu.getData();
+    const expected = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    expect(data).to.be.an('array').with.lengthOf(8);
+    for (let i = 0; i < expected.length; i++) {
+      expect((data as number[])[i]).to.be.closeTo(expected[i], 1e-6);
+    }
+  });
+});
