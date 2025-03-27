@@ -6,6 +6,7 @@ import { expect } from 'chai';
 import { Fits } from '../src/fits';
 import { FitsError } from '../src/errors';
 import { FitsHDU } from '../src/fitsHDU';
+import { FitsHeader } from '../src/fitsHeader';
 
 describe('Fits Class', () => {
   // --- Helper functions for tests ---
@@ -260,5 +261,88 @@ describe('Fits Class', () => {
   
     // Clean up the temporary file.
     fs.unlinkSync(tempGzipFile);
+  });
+
+  it('should correctly parse a binary table with provided TTYPE names', () => {
+    // Build a header for a binary table with 2 rows and 2 fields.
+    const header = new FitsHeader();
+    header.set('NAXIS2', 2, 'Number of rows');
+    // Row size is 5 bytes (ASCII) + 4 bytes (float32) = 9 bytes per row.
+    header.set('NAXIS1', 9, 'Row size');
+    header.set('TFIELDS', 2, 'Number of fields');
+    header.set('TFORM1', '5A', 'Format for column 1');
+    header.set('TTYPE1', 'colText', 'Name for column 1');
+    header.set('TFORM2', '1E', 'Format for column 2');
+    header.set('TTYPE2', 'colFloat', 'Name for column 2');
+
+    // Create a binary data block with 2 rows.
+    const buffer = new ArrayBuffer(9 * 2);
+    const view = new DataView(buffer);
+    // Row 0: "Hello" and float 1.23.
+    const text1 = "Hello";
+    for (let i = 0; i < 5; i++) {
+      view.setUint8(i, text1.charCodeAt(i));
+    }
+    view.setFloat32(5, 1.23, false);
+
+    // Row 1: "World" and float 4.56.
+    const row1Offset = 9;
+    const text2 = "World";
+    for (let i = 0; i < 5; i++) {
+      view.setUint8(row1Offset + i, text2.charCodeAt(i));
+    }
+    view.setFloat32(row1Offset + 5, 4.56, false);
+
+    const table = (Fits as any).readBinaryTable(view, 0, buffer.byteLength, header);
+    expect(table).to.be.an('array').with.lengthOf(2);
+    expect(table[0]).to.have.property('colText', 'Hello');
+    expect(table[0]).to.have.property('colFloat');
+    expect(table[0].colFloat).to.be.closeTo(1.23, 1e-5);
+    expect(table[1]).to.have.property('colText', 'World');
+    expect(table[1]).to.have.property('colFloat');
+    expect(table[1].colFloat).to.be.closeTo(4.56, 1e-5);
+  });
+
+  it('should correctly parse a binary table using default column names when TTYPE is missing', () => {
+    // Build a header for a binary table with 1 row and 2 fields.
+    const header = new FitsHeader();
+    header.set('NAXIS2', 1, 'Number of rows');
+    // Row size: 5 bytes for ASCII + 4 bytes for float32 = 9.
+    header.set('NAXIS1', 9, 'Row size');
+    header.set('TFIELDS', 2, 'Number of fields');
+    header.set('TFORM1', '5A', 'Format for column 1');
+    // Do not set TTYPE1 so that default name is used.
+    header.set('TFORM2', '1E', 'Format for column 2');
+    // Do not set TTYPE2.
+
+    // For default naming, we expect the implementation to use "ttype1", "ttype2", etc.
+    const buffer = new ArrayBuffer(9);
+    const view = new DataView(buffer);
+    // Row: "Alpha" and float 7.89.
+    const text = "Alpha";
+    for (let i = 0; i < 5; i++) {
+      view.setUint8(i, text.charCodeAt(i));
+    }
+    view.setFloat32(5, 7.89, false);
+
+    const table = (Fits as any).readBinaryTable(view, 0, buffer.byteLength, header);
+    expect(table).to.be.an('array').with.lengthOf(1);
+    // Expect default column names as "COL1" and "COL2".
+    expect(table[0]).to.have.property('COL1', 'Alpha');
+    expect(table[0]).to.have.property('COL2');
+    expect(table[0].COL2).to.be.closeTo(7.89, 1e-5);
+  });
+
+  it('should ignore empty COMMENT and HISTORY header fields', () => {
+    const shape = [10, 10];
+    const fits = Fits.create(shape, 'uint8');
+    fits.primary.header.addComment('');
+    fits.primary.header.addHistory('');
+
+    const buffer = fits.toArrayBuffer();
+    const fits2 = Fits.fromArrayBuffer(buffer);
+    const header = fits2.primary.header;
+    expect(header.get('COMMENT')).to.be.undefined;
+    expect(header.get('HISTORY')).to.be.undefined;
   });
 });

@@ -24,6 +24,14 @@ describe('FitsHeader', () => {
       expect(header.get('OBJECT')).to.equal('Second');
       expect((header as any).OBJECT).to.equal('Second');
     });
+  
+    describe('Special Cards Handling', () => {
+      it('should not return an END card when calling get()', () => {
+        header.set('OBJECT', 'Test Object');
+        header.toRecords();
+        expect(header.get('END')).to.be.undefined;
+      });
+    });
   });
 
   describe('Handling COMMENT and HISTORY Cards', () => {

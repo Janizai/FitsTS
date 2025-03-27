@@ -86,7 +86,12 @@ export class Fits {
       offset += headerBytes;
       if (dataBytes > 0) {
         Fits.log('debug', `Reading data block (${dataBytes} bytes) for HDU #${fits.hdus.length}`);
-        hdu.data = Fits.readTypedArray(dataView, offset, dataBytes, header.get('BITPIX'));
+
+        if (extType === 'BINTABLE' || extType === 'TABLE') {
+          hdu.data = Fits.readBinaryTable(dataView, offset, dataBytes, header);
+        } else {
+          hdu.data = Fits.readTypedArray(dataView, offset, dataBytes, header.get('BITPIX'));
+        }
       }
       const dataBlockSize = Math.ceil(dataBytes / 2880) * 2880;
       offset += dataBlockSize;
@@ -177,8 +182,6 @@ export class Fits {
     }
   }
 
-  // Convert the FITS file to an ArrayBuffer.
-  // Always output the raw flat typed array data.
   toArrayBuffer(): ArrayBuffer {
     // Update header dimensions if necessary.
     for (const hdu of this.hdus) {
@@ -207,10 +210,30 @@ export class Fits {
       const headerBytes = records.length * 80;
       headerRecordsArray.push(records);
       totalBytes += headerBytes;
-      let dataBytes = hdu.data ? hdu.data.byteLength : 0;
+      let dataArray = hdu.data;
+      let dataBytes = 0;
+      if (dataArray) {
+        if (hdu.extType === 'BINTABLE' || hdu.extType === 'TABLE') {
+          // For table HDUs, convert the table (an array of row objects) into a Uint8Array.
+          dataArray = Fits.writeBinaryTableData(dataArray as any[], hdu.header);
+          dataBytes = dataArray.byteLength;
+        } else {
+            // For image (typed array) data, scale the data if needed.
+            const bscale = hdu.header.get('BSCALE') ?? 1;
+            const bzero = hdu.header.get('BZERO') ?? 0;
+            const constructor = dataArray.constructor as new (length: number) => any;
+            const scaled = new constructor(dataArray.length);
+            for (let i = 0; i < dataArray.length; i++) {
+                scaled[i] = (dataArray[i] - bzero) / bscale;
+            }
+            dataArray = scaled;
+            dataBytes = (dataArray as Uint8Array).byteLength;
+        }
+      }
       const paddedDataBytes = Math.ceil(dataBytes / 2880) * 2880;
       totalBytes += paddedDataBytes;
-      dataBlocks.push({ array: hdu.data, byteLength: dataBytes, bitpix: hdu.header.get('BITPIX') });
+      // Now, dataArray is guaranteed to be a typed array (FitsTypedArray)
+      dataBlocks.push({ array: dataArray as FitsTypedArray, byteLength: dataBytes, bitpix: hdu.header.get('BITPIX') });
       Fits.log('debug', `HDU ${index}: headerBytes=${headerBytes}, dataBytes=${dataBytes}, padded=${paddedDataBytes}`);
     });
 
@@ -228,10 +251,76 @@ export class Fits {
         offset += padBytes;
       }
     }
-    return buffer;
+  return buffer;
   }
 
-  // --- Helper Functions ---
+  // New helper: serialize table data (an array of row objects) into a Uint8Array.
+  private static writeBinaryTableData(table: any[], header: FitsHeader): Uint8Array {
+    const nrows = header.get('NAXIS2');
+    const rowSize = header.get('NAXIS1');
+    const tfields = header.get('TFIELDS');
+    const forms: string[] = [];
+    for (let i = 1; i <= tfields; i++) {
+      const formVal = header.get(`TFORM${i}`);
+      if (!formVal) {
+        throw new FitsError(`Missing TFORM${i} in BINTABLE header`);
+      }
+      forms.push(String(formVal).trim().toUpperCase());
+    }
+    const buffer = new ArrayBuffer(nrows * rowSize);
+    const view = new DataView(buffer);
+    for (let row = 0; row < nrows; row++) {
+      const rowObj = table[row];
+      let colOffset = row * rowSize;
+      for (let col = 0; col < tfields; col++) {
+        const form = forms[col];
+        const match = /^(\d*)([AIEFD])/i.exec(form) || /^(\d*)A/i.exec(form);
+        if (!match) {
+          throw new FitsError(`Unsupported TFORM '${form}' for column ${col + 1}`);
+        }
+        const repeat = parseInt(match[1] || '1', 10);
+        const code = match[2].toUpperCase();
+        // Determine column name: use TTYPE if provided, else default to "COL{n}"
+        const colName = header.get(`TTYPE${col + 1}`) ? String(header.get(`TTYPE${col + 1}`)).trim() : `COL${col + 1}`;
+        const value = rowObj[colName];
+        if (code === 'A') {
+          let text = String(value || '');
+          // Ensure the text is exactly 'repeat' characters
+          if (text.length < repeat) {
+            text = text.padEnd(repeat, ' ');
+          } else if (text.length > repeat) {
+            text = text.substring(0, repeat);
+          }
+          for (let i = 0; i < repeat; i++) {
+            view.setUint8(colOffset + i, text.charCodeAt(i));
+          }
+          colOffset += repeat;
+        } else {
+          let size: number;
+          let setter: (dv: DataView, offset: number, val: number) => void;
+          if (code === 'E') { size = 4; setter = (dv, off, val) => dv.setFloat32(off, val, false); }
+          else if (code === 'D') { size = 8; setter = (dv, off, val) => dv.setFloat64(off, val, false); }
+          else if (code === 'I') { size = 2; setter = (dv, off, val) => dv.setInt16(off, val, false); }
+          else {
+            throw new FitsError(`TFORM code '${code}' not implemented for writing`);
+          }
+          if (repeat === 1) {
+            const num = Number(value || 0);
+            setter(view, colOffset, num);
+            colOffset += size;
+          } else {
+            const arr = Array.isArray(value) ? value : [];
+            for (let i = 0; i < repeat; i++) {
+                const num = Number(arr[i] || 0);
+                setter(view, colOffset, num);
+                colOffset += size;
+            }
+          }
+        }
+      }
+    }
+  return new Uint8Array(buffer);
+  }
 
   // Write header records (each 80 characters) to the DataView.
   private static writeHeaderRecords(view: DataView, offset: number, records: string[]): number {
@@ -308,6 +397,92 @@ export class Fits {
     return array;
   }
 
+  private static readBinaryTable(
+    dataView: DataView,
+    startOffset: number,
+    dataBytes: number,
+    header: FitsHeader
+  ): any[] {
+    // Number of rows, total row size in bytes, and number of columns (fields)
+    const nrows = header.get('NAXIS2');
+    const rowSize = header.get('NAXIS1');
+    const tfields = header.get('TFIELDS');
+  
+    // Prepare column metadata: TFORMs and column names (from TTYPE keywords)
+    const forms: string[] = [];
+    const colNames: string[] = [];
+    for (let i = 1; i <= tfields; i++) {
+      const formVal = header.get(`TFORM${i}`);
+      if (!formVal) {
+        throw new FitsError(`Missing TFORM${i} in BINTABLE header`);
+      }
+      forms.push(String(formVal).trim().toUpperCase());
+      // Use TTYPE if available; otherwise fall back to a default column name.
+      const ttypeVal = header.get(`TTYPE${i}`);
+      colNames.push(ttypeVal ? String(ttypeVal).trim() : `COL${i}`);
+    }
+  
+    // Mapping for numeric types: byte size and DataView getter.
+    const numericMapping: { [code: string]: { size: number; getter: (dv: DataView, offset: number) => any } } = {
+      'E': { size: 4, getter: (dv, offset) => dv.getFloat32(offset, false) },
+      'D': { size: 8, getter: (dv, offset) => dv.getFloat64(offset, false) },
+      'I': { size: 2, getter: (dv, offset) => dv.getInt16(offset, false) }
+      // Additional numeric types (like J for 32-bit ints) could be added here if needed.
+    };
+  
+    // Read each row into an object whose keys are the column names.
+    const table: any[] = [];
+    for (let row = 0; row < nrows; row++) {
+      const rowOffset = startOffset + row * rowSize;
+      let colOffset = 0;
+      const rowObj: any = {};
+  
+      for (let col = 0; col < tfields; col++) {
+        const form = forms[col];
+        // Parse repeat count and type code (e.g. "10A", "1E", "3D", etc.)
+        const match = /^(\d*)([AIEFD])/i.exec(form) || /^(\d*)A/i.exec(form);
+        if (!match) {
+          throw new FitsError(`Unsupported TFORM '${form}' for column ${col + 1}`);
+        }
+        const repeat = parseInt(match[1] || '1', 10);
+        const code = match[2].toUpperCase();
+  
+        let value: any;
+        if (code === 'A') {
+          // For ASCII columns: read 'repeat' bytes and convert to string.
+          let text = '';
+          for (let i = 0; i < repeat; i++) {
+            const byteVal = dataView.getUint8(rowOffset + colOffset + i);
+            // Append non-zero bytes (ignore null padding)
+            text += byteVal !== 0 ? String.fromCharCode(byteVal) : '';
+          }
+          value = text.trim();
+          colOffset += repeat;
+        } else if (numericMapping[code]) {
+          const { size, getter } = numericMapping[code];
+          if (repeat === 1) {
+            value = getter(dataView, rowOffset + colOffset);
+            colOffset += size;
+          } else {
+            const values = new Array(repeat);
+            for (let i = 0; i < repeat; i++) {
+              values[i] = getter(dataView, rowOffset + colOffset);
+              colOffset += size;
+            }
+            value = values;
+          }
+        } else {
+          throw new FitsError(`TFORM code '${code}' not yet implemented`);
+        }
+        // Map the value to its corresponding column name.
+        rowObj[colNames[col]] = value;
+      }
+      table.push(rowObj);
+    }
+  
+    return table;
+  }
+
   // Read an 80-character card from the DataView.
   private static readCard(dataView: DataView, offset: number): { card: string; newOffset: number } {
     let card = '';
@@ -356,9 +531,18 @@ export class Fits {
     let offset = startOffset;
     while (true) {
       const { card, newOffset } = this.readCard(dataView, offset);
-      cards.push(card);
+      const trimmedCard = card.trim();
+      if (trimmedCard.startsWith('END')) {
+        break;
+      }
+      const key = card.substring(0, 8).trim();
+      const valuePart = card.substring(8).trim();
+      if ((key === 'COMMENT' || key === 'HISTORY') && valuePart === '') {
+        // Skip blank COMMENT/HISTORY cards.
+      } else {
+        cards.push(card);
+      }
       offset = newOffset;
-      if (card.trim().startsWith('END')) break;
     }
     return { cards, offset };
   }
